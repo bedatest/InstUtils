@@ -15,7 +15,7 @@ class IDataSource():
     def get_location(self, id):
        raise NotImplementedError("For correct working this method needs to be implemented")
 
-    def get_subscriptions(self, post):
+    def get_subscriptions(self, user):
        raise NotImplementedError("For correct working this method needs to be implemented")
 
     def get_followers(self, user):
@@ -36,16 +36,15 @@ class InstaParser(IDataSource):
         self.__query_metadata = {
             'subscriptions': {
                 'query_hash': 'd04b0a864b4b54837c0d870b0e77e076',
-                'def': 'id'
+                'value_type': 'id'
             },
             'followers': {
                 'query_hash': 'c76146de99bb02f6415203be841dd25a',
-                'def': 'id'
+                'value_type': 'id'
             },
             'posts': {
                 'query_hash': 'e769aa130647d2354c40ea6a439bfc08',
-                'url': 'https://instagram.com/p/{shortcode}/?__a=1',
-                'def': 'id'
+                'value_type': 'id'
             },
             'tagged': {
                 'query_hash': 'ff260833edf142911047af6024eb634a'
@@ -55,23 +54,23 @@ class InstaParser(IDataSource):
             },
             'comments': {
                 'query_hash': 'bc3296d1ce80a24b1b6e40b1e72903f5',
-                'def': 'shortcode'
+                'value_type': 'shortcode'
             },
             'likes': {
                 'query_hash': 'd5d763b1e2acf209d62d22d184488e57',
-                'def': 'shortcode'
+                'value_type': 'shortcode'
             },
             'tag_post': {
                 'query_hash': 'bd33792e9f52a56ae8fa0985521d141d',
-                'def': 'tag_name'
+                'value_type': 'tag_name'
             },
             'location_post': {
                 'query_hash': '1b84447a4d8b6d6d0426fefb34514485',
-                'def': 'id'
+                'value_type': 'id'
             }
         }
 
-    def __get_single_json(self, url):
+    def __get_entity(self, url):
         scraped_json = self.__session.get(url)
         return json.loads(scraped_json.text)
     
@@ -88,17 +87,16 @@ class InstaParser(IDataSource):
         else:
             return None
 
-    def __get_multiple_json(self, id, query_metadata, records_count=240):
+    def __get_entity_list(self, id, query_metadata, records_count=50):
         variables = {
-                query_metadata['def']: str(id),
-                'include_reel': True,
-                'fetch_mutual': True,
-                'first': records_count
-            }
+            query_metadata['value_type']: str(id),
+            'include_reel': True,
+            'fetch_mutual': True,
+            'first': records_count}
+
         params = {
             'query_hash': query_metadata['query_hash'],
-            'variables': json.dumps(variables)
-        }
+            'variables': json.dumps(variables)}
 
         edge_list = []
         has_next_page = True
@@ -106,15 +104,15 @@ class InstaParser(IDataSource):
             response = json.loads(self.__session.get(self.__graphql_url, params=params).text)
             edges = self.__get_node_by_key(response, 'edges')
             edge_list.extend(edges)
-            has_next_page = self.__get_node_by_key(response, 'has_next_page')
             variables['after'] = self.__get_node_by_key(response, 'end_cursor')
             params['variables'] = json.dumps(variables)
+            has_next_page = self.__get_node_by_key(response, 'has_next_page')
 
         return edge_list
 
     def get_user(self, username):
-        user_json = self.__get_single_json(self.__user_url.format(username=username))
-        #CHECK JSON
+        user_json = self.__get_entity(self.__user_url.format(username=username))
+
         base_node = user_json['graphql']['user']
         user = structure.User(
             id = base_node['id'],
@@ -136,13 +134,12 @@ class InstaParser(IDataSource):
             subscriptions_count = base_node['edge_follow']['count'],
             followers_count = base_node['edge_followed_by']['count'],
             mutual_users_count = base_node['edge_mutual_followed_by']['count'],
-            posts_count = base_node['edge_owner_to_timeline_media']['count'],
-            last_update = "datetime.now()" #LOOK AT ME
+            posts_count = base_node['edge_owner_to_timeline_media']['count']
         )
         return user
 
     def get_post(self, shortcode):
-        post_json = self.__get_single_json(self.__post_url.format(shortcode=shortcode))
+        post_json = self.__get_entity(self.__post_url.format(shortcode=shortcode))
         #TODO: CHECK JSON
         base_node = post_json['graphql']['shortcode_media']
         caption_edge = base_node['edge_media_to_caption']['edges']
@@ -165,12 +162,11 @@ class InstaParser(IDataSource):
             comments_disabled = base_node['comments_disabled'],
             is_ad = base_node['is_ad'],
             display_url = base_node['display_url'],
-            viewer_in_photo_of_you = base_node['viewer_in_photo_of_you']
-        )
+            viewer_in_photo_of_you = base_node['viewer_in_photo_of_you'])
         return post
 
     def get_tag(self, tag_name):
-        tag_json = self.__get_single_json(self.__tag_url.format(tag_name=tag_name))
+        tag_json = self.__get_entity(self.__tag_url.format(tag_name=tag_name))
         #TODO: JSON CHECKING
         base_node = tag_json['graphql']['hashtag']
         tag = structure.Tag(
@@ -180,9 +176,9 @@ class InstaParser(IDataSource):
            count = base_node['edge_hashtag_to_media']['count']
         )
         return tag
-
+ 
     def get_location(self, location_id):
-        location_json = self.__get_single_json(self.__location_url.format(location_id=location_id))
+        location_json = self.__get_entity(self.__location_url.format(location_id=location_id))
         base_node = location_json['qraphql']['location']
         location = structure.Location(
             id = base_node['id'],
@@ -204,17 +200,17 @@ class InstaParser(IDataSource):
         return location
 
     def get_subscriptions(self, user):
-        subs_json = self.__get_multiple_json(user.id, self.__query_metadata['subscriptions'])
+        subs_json = self.__get_entity_list(user.id, self.__query_metadata['subscriptions'])
         subscriptions = [self.get_user(self.__get_node_by_key(sub, 'username')) for sub in subs_json]
         return subscriptions
 
     def get_followers(self, user):
-        followers_json = self.__get_multiple_json(user.id, self.__query_metadata['followers'])
+        followers_json = self.__get_entity_list(user.id, self.__query_metadata['followers'])
         followers = [self.get_user(self.__get_node_by_key(follower, 'username')) for follower in followers_json]
         return followers
 
     def get_post_list(self, user):
-        posts_json = self.__get_multiple_json(user.id, self.__query_metadata['posts'])
+        posts_json = self.__get_entity_list(user.id, self.__query_metadata['posts'])
         posts = [self.get_post(self.__get_node_by_key(post, 'shortcode')) for post in posts_json]
         return posts
        
@@ -304,7 +300,7 @@ class InstaFacade():
         self.current_session = InstaSession()
         self.current_session.set_default()
 
-        print(self.current_session.authenticate("bedanatic", "Subscribe"))
+        print(self.current_session.authenticate(username, password))
 
         self.scraper = InstaParser(self.current_session)
         self.actions = InstaAction(self.current_session)

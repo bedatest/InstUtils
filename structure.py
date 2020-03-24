@@ -26,7 +26,7 @@ class User():
     followers_count: int = 0
     mutual_users_count: int = 0
     posts_count: int = 0
-    last_update = datetime.now()
+    last_update: any = datetime.now()
  
     def __repr__(self):
         return f'<User: {self.username} with name "{self.full_name}">'
@@ -53,6 +53,7 @@ class Post():
     display_url: str = ''
     accessibility_caption: str = ''
     viewer_in_photo_of_you: bool = False
+    last_update: any = datetime.now()
 
     def __repr__(self):
         return f'<Post with id {self.id}>'
@@ -65,6 +66,7 @@ class Tag():
     is_following: bool = False
     allow_following: bool = False
     count: int = 0
+    last_update: any = datetime.now()
         
     def __repr__(self):
         return f'<{self.name} with id {self.id}>'
@@ -87,7 +89,7 @@ class Location():
     posts_count: int = 0
     country: str = ''
     city: str = ''
-    last_update = datetime.now()
+    last_update: any = datetime.now()
         
     def __repr__(self):
         return f'<{self.name} with id {self.id}>'
