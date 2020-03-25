@@ -1,6 +1,10 @@
 import requests
 import json
-
+import time
+import urllib3
+import socket
+import pickle
+import exceptions
 import structure
 class IDataSource():
     def get_user(self, username):
@@ -27,10 +31,6 @@ class IDataSource():
 
 class InstaParser(IDataSource):
     def __init__(self, session):
-        self.__post_url = 'https://instagram.com/p/{shortcode}/?__a=1'
-        self.__user_url = 'https://instagram.com/{username}/?__a=1'
-        self.__tag_url = 'https://instagram.com/explore/tags/{tag_name}/?__a=1'
-        self.__location_url = 'https://instagram.com/explore/locations/{location_id}/?__a=1'
         self.__graphql_url = 'https://instagram.com/graphql/query/'
         self.__session = session
         self.__query_metadata = {
@@ -70,17 +70,12 @@ class InstaParser(IDataSource):
             }
         }
 
-    def __get_entity(self, url):
-        scraped_json = self.__session.get(url)
-        return json.loads(scraped_json.text)
-    
     def __get_node_by_key(self, dictionary, target_node):
         if isinstance(dictionary, dict):
             result = None
-            keys = list(dictionary.keys())
-            for key in keys:
+            for key in dictionary:
                 if key == target_node:
-                    result = dictionary.get(key)
+                    result = dictionary[key]
                 else:
                     result = result or self.__get_node_by_key(dictionary.get(key), target_node)
             return result
@@ -111,7 +106,8 @@ class InstaParser(IDataSource):
         return edge_list
 
     def get_user(self, username):
-        user_json = self.__get_entity(self.__user_url.format(username=username))
+        url = f'https://instagram.com/{username}/?__a=1'
+        user_json = self.__session.get(url)
 
         base_node = user_json['graphql']['user']
         user = structure.User(
@@ -139,8 +135,10 @@ class InstaParser(IDataSource):
         return user
 
     def get_post(self, shortcode):
-        post_json = self.__get_entity(self.__post_url.format(shortcode=shortcode))
+        url = f'https://instagram.com/p/{shortcode}/?__a=1'
+        post_json = self.__session.get(url)
         #TODO: CHECK JSON
+        
         base_node = post_json['graphql']['shortcode_media']
         caption_edge = base_node['edge_media_to_caption']['edges']
         caption = "" if len(caption_edge) == 0 else caption_edge[0]['node']['text']
@@ -166,7 +164,8 @@ class InstaParser(IDataSource):
         return post
 
     def get_tag(self, tag_name):
-        tag_json = self.__get_entity(self.__tag_url.format(tag_name=tag_name))
+        url = f'https://instagram.com/explore/tags/{tag_name}/?__a=1'
+        tag_json = self.__session.get(url)
         #TODO: JSON CHECKING
         base_node = tag_json['graphql']['hashtag']
         tag = structure.Tag(
@@ -178,7 +177,8 @@ class InstaParser(IDataSource):
         return tag
  
     def get_location(self, location_id):
-        location_json = self.__get_entity(self.__location_url.format(location_id=location_id))
+        url = f'https://instagram.com/explore/locations/{location_id}/?__a=1'
+        location_json = self.__session.get(url)
         base_node = location_json['qraphql']['location']
         location = structure.Location(
             id = base_node['id'],
@@ -257,50 +257,117 @@ class InstaAnalyser():
         pass
 
 
-class InstaSession(requests.Session):
-    __auth_page_url = 'https://instagram.com/accounts/login/'
-    __auth_url = 'https://instagram.com/accounts/login/ajax/'
-    __default_headers = {
-            'authority': 'www.instagram.com',
-            'origin': 'https://www.instagram.com',
-            'x-ig-www-claim': 'hmac.AR36IPRJfr73424ue2ZSk-zrEPGPYMeS9MAmUUyHmWWBNp71',
-            'x-instagram-ajax': 'a51d664a936c',
-            'content-type': 'application/x-www-form-urlencoded',
-            'accept': '*/*',
-            'x-requested-with': 'XMLHttpRequest',
-            'user-agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/78.0.3904.108 YaBrowser/19.12.3.332 (beta) Yowser/2.5 Safari/537.36',
-            'x-csrftoken': 'Elm4zr4OlCOYBPLOJWAEawrHwoe4gMV4',
-            'dnt': '1',
-            'x-ig-app-id': '936619743392459',
-            'sec-fetch-site': 'same-origin',
-            'sec-fetch-mode': 'cors',
-            'referer': 'https://www.instagram.com/accounts/login/?source=auth_switcher',
-            'accept-encoding': 'gzip, deflate, br',
-            'accept-language': 'ru,en;q=0.9,la;q=0.8',
-        }
+class InstaSession():
+    def __init__(self, username=None, password=None):
+        self.__request_count = 0
+        self.__last_request_time = time.time()
 
-    def authenticate(self, username, password):
-        auth_data = {
-            'username': username,
-            'password': password,
-            'queryParams': '{"source":"auth_switcher"}',
-            'optIntoOneTap': 'false'
+        self.__session = self.__generate_default_session()
+        self.__logged_user = None
+
+        if ((username is None) and (password is not None)):
+            raise exceptions.InvalidLoginOrPassword('Password cound not be empty')
+        elif ((username is not None) and (password is None)):
+            raise exceptions.InvalidLoginOrPassword('Username cound not be empty')
+        elif ((username and password) is not None):
+            self.__logged_user = self.__session = self.login(username, password)
+
+    def __generate_default_session(self):    
+        auth_page_url = 'https://instagram.com/accounts/login/'
+        default_headers = {
+                'authority': 'www.instagram.com',
+                'origin': 'https://www.instagram.com',
+                'x-ig-www-claim': 'hmac.AR36IPRJfr73424ue2ZSk-zrEPGPYMeS9MAmUUyHmWWBNp71',
+                'x-instagram-ajax': 'a51d664a936c',
+                'content-type': 'application/x-www-form-urlencoded',
+                'accept': '*/*',
+                'x-requested-with': 'XMLHttpRequest',
+                'user-agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/78.0.3904.108 YaBrowser/19.12.3.332 (beta) Yowser/2.5 Safari/537.36',
+                'x-csrftoken': '',
+                'dnt': '1',
+                'x-ig-app-id': '936619743392459',
+                'sec-fetch-site': 'same-origin',
+                'sec-fetch-mode': 'cors',
+                'referer': 'https://www.instagram.com/accounts/login/?source=auth_switcher',
+                'accept-encoding': 'gzip, deflate, br',
+                'accept-language': 'ru,en;q=0.9,la;q=0.8',
             }
-        self.set_default()
-        page_with_csrf_token = self.get(InstaSession.__auth_page_url)
-        self.headers.update({'x-csrftoken': page_with_csrf_token.cookies.get('csrftoken')})
-        return self.post(InstaSession.__auth_url, data=auth_data).status_code
 
-    def set_default(self):
-        self.headers.update(InstaSession.__default_headers)
+        session = requests.Session()
+        session.headers.update(default_headers)
+        
+        page_with_csrf_token = session.get(auth_page_url)
+        session.headers.update({'x-csrftoken': page_with_csrf_token.cookies.get('csrftoken')})
+        return session
 
+    def __ban_protection_trigger(self):
+        self.__request_count = self.__request_count + 1
+        current_request_time = time.time()
+        time_delta = (current_request_time - self.__last_request_time)
+
+        if (time_delta < 0.5):
+            time.sleep(0.5 - time_delta)
+        elif (self.__request_count > 2500):
+            time.sleep(10)
+            self.__request_count = 0
+
+        self.__last_request_time = time.time()
+    
+    def __request(self, method, url, request_args):
+        self.__ban_protection_trigger()
+
+        response = self.__session.request(method, url, **request_args)
+
+        is_client_error_response = ((response.status_code >= 400) and (response.status_code <= 499))
+        if is_client_error_response == False:
+            return response
+        else:
+            raise exceptions.RequestException(response, request_args)      
+
+    def get(self, url, **request_args):
+        request_args.setdefault('allow_redirects', True)
+        return self.__request('GET', url, request_args)
+
+    def post(self, url, **request_args):
+        return self.__request('POST', url, request_args)
+    
+    def save_session(self, path='./'):
+        if(self.__logged_user is None):
+            raise exceptions.SaveSessionException('Session is in incognito mode. Log in to save the session')
+        else:
+            with open(path + self.__logged_user + '.svdssn', 'wb') as output_file:
+                pickle.dump(self.__session, output_file)
+
+    def load_session(self, username, path='./'):
+        with open(self.__logged_user + '.svdssn', 'rb') as input_file:
+            pickle.load(self.__session, input_file)
+
+    def get_logged_user(self):
+        return self.__logged_user
+
+    def login(self, username, password):
+            auth_url = 'https://instagram.com/accounts/login/ajax/'
+            auth_data = {
+                'username': username,
+                'password': password,
+                'queryParams': '{"source":"auth_switcher"}',
+                'optIntoOneTap': 'false'
+                }
+    
+            response = self.post(auth_url, data=auth_data)
+            response_json = json.loads(response.text)
+
+            if response_json['authenticated'] is False:
+                raise exceptions.InvalidLoginOrPassword('Could not authenticate. Username or password is wrong')
+
+            del auth_data['password']
+            return username
+
+    def logout(self):
+        pass
 
 class InstaFacade():
     def __init__(self, username, password):
         self.current_session = InstaSession()
-        self.current_session.set_default()
-
-        print(self.current_session.authenticate(username, password))
-
         self.scraper = InstaParser(self.current_session)
         self.actions = InstaAction(self.current_session)
